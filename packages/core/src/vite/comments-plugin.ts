@@ -190,6 +190,14 @@ function offsetToLine(source: string, offset: number): number {
 export type EditOp =
   | { kind: 'set-style'; key: string; value: string | null }
   | { kind: 'set-text'; value: string; prevText?: string }
+  | {
+      kind: 'set-text-range-style';
+      start: number;
+      end: number;
+      key: string;
+      value: string | null;
+      prevText?: string;
+    }
   | { kind: 'set-attr-asset'; attr: string; assetPath: string }
   | { kind: 'replace-placeholder-with-image'; assetPath: string };
 
@@ -332,6 +340,7 @@ type TextCandidate = {
 };
 
 type JsxParent = t.JSXElement | t.JSXFragment;
+type TextRangeLeaf = { node: t.JSXText; parent: JsxParent; current: string };
 
 function meaningfulChildren(parent: JsxParent): t.Node[] {
   return parent.children.filter((c) => {
@@ -433,6 +442,76 @@ function collectTextCandidates(element: JsxParent, out: TextCandidate[]): void {
       collectTextCandidates(child, out);
     }
   }
+}
+
+function collectTextRangeLeaves(element: JsxParent, out: TextRangeLeaf[]): void {
+  for (const child of meaningfulChildren(element)) {
+    if (t.isJSXText(child)) {
+      const current = child.value.trim();
+      if (current) out.push({ node: child, parent: element, current });
+    } else if (t.isJSXElement(child) || t.isJSXFragment(child)) {
+      collectTextRangeLeaves(child, out);
+    }
+  }
+}
+
+function styleSpanForText(text: string, key: string, value: string | null): string {
+  if (value === null) return formatJsxText(text);
+  return `<span style={{ ${key}: ${jsString(value)} }}>${formatJsxText(text)}</span>`;
+}
+
+function buildTextRangeStyleSplice(
+  source: string,
+  element: t.JSXElement,
+  start: number,
+  end: number,
+  op: { key: string; value: string | null },
+  prevText?: string,
+): Splice | { error: string } | null {
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start) {
+    return { error: 'invalid text range' };
+  }
+
+  const current = prevText ?? staticDomRenderedText(element);
+  if (!current) return { error: 'element has no editable text' };
+  if (end > current.length) return { error: 'text range is out of bounds' };
+
+  const leaves: TextRangeLeaf[] = [];
+  collectTextRangeLeaves(element, leaves);
+
+  let searchAt = 0;
+  for (const leaf of leaves) {
+    const leafStart = current.indexOf(leaf.current, searchAt);
+    if (leafStart < 0) continue;
+    const leafEnd = leafStart + leaf.current.length;
+    searchAt = leafEnd;
+    if (start < leafStart || end > leafEnd) continue;
+
+    if (
+      start === leafStart &&
+      end === leafEnd &&
+      t.isJSXElement(leaf.parent) &&
+      leaf.parent !== element
+    ) {
+      return buildStyleSplice(source, leaf.parent, [op]);
+    }
+
+    const raw = leaf.node.value;
+    const currentStartInRaw = raw.indexOf(leaf.current);
+    if (currentStartInRaw < 0) return { error: 'text range source mismatch' };
+    const rawStart = currentStartInRaw + start - leafStart;
+    const rawEnd = currentStartInRaw + end - leafStart;
+    const before = raw.slice(0, rawStart);
+    const selected = raw.slice(rawStart, rawEnd);
+    const after = raw.slice(rawEnd);
+    if (op.value === null) return noopSplice(leaf.node);
+    return spliceRange(
+      leaf.node,
+      `${before}${styleSpanForText(selected, op.key, op.value)}${after}`,
+    );
+  }
+
+  return { error: 'text range spans multiple text nodes' };
 }
 
 function normalizeRenderedText(value: string): string {
@@ -985,6 +1064,20 @@ export function applyEdit(
     if (result && 'error' in result) {
       return { ok: false, status: 422, error: result.error };
     }
+    if (result) splices.push(result);
+  }
+
+  for (const op of ops) {
+    if (op.kind !== 'set-text-range-style') continue;
+    const result = buildTextRangeStyleSplice(
+      source,
+      element,
+      op.start,
+      op.end,
+      { key: op.key, value: op.value },
+      op.prevText,
+    );
+    if (result && 'error' in result) return { ok: false, status: 422, error: result.error };
     if (result) splices.push(result);
   }
 

@@ -60,12 +60,21 @@ type ElementSnapshot = {
   placeholder: { hint: string; width?: number; height?: number } | null;
 };
 
+type ContentSelection = { start: number; end: number };
+
 export function InspectorPanel() {
   const { active, slideId, selected, setSelected, bufferOps, pendingCount, add, applyEdit } =
     useInspector();
   const [snapshot, setSnapshot] = useState<ElementSnapshot | null>(null);
+  const [contentSelection, setContentSelection] = useState<ContentSelection | null>(null);
+  const selectedKey = selected ? `${selected.line}:${selected.column}` : null;
   const reloadCounter = useReloadCounter();
   const t = useLocale();
+
+  useEffect(() => {
+    void selectedKey;
+    setContentSelection(null);
+  }, [selectedKey]);
 
   useEffect(() => {
     void reloadCounter;
@@ -139,6 +148,38 @@ export function InspectorPanel() {
 
   if (!pinned) return null;
   const { s: pinSelected, n: pinSnapshot } = pinned;
+  const contentRange =
+    pinSnapshot.text !== null && contentSelection && contentSelection.end > contentSelection.start
+      ? contentSelection
+      : null;
+  const applyTextStyle = (ops: EditOp[]) => {
+    const styleOps = ops.flatMap((op) => (op.kind === 'set-style' ? [op] : []));
+    if (
+      contentRange &&
+      pinSnapshot.text !== null &&
+      styleOps.length === ops.length &&
+      styleOps.every((op) => INLINE_CONTENT_STYLE_KEYS.has(op.key))
+    ) {
+      for (const op of styleOps) {
+        applyEdit(pinSelected.line, pinSelected.column, [
+          {
+            kind: 'set-text-range-style',
+            start: contentRange.start,
+            end: contentRange.end,
+            key: op.key,
+            value: op.value,
+            prevText: pinSnapshot.text,
+          },
+        ]).catch((err) => {
+          if (err instanceof Error && err.name === 'NoOpEditError') return;
+          const msg = err instanceof Error ? err.message : String(err);
+          toast.error(`${t.inspector.saveFailed} ${msg}`);
+        });
+      }
+      return;
+    }
+    apply(ops);
+  };
 
   return (
     <PanelShell
@@ -173,16 +214,20 @@ export function InspectorPanel() {
     >
       {pinSnapshot.text !== null && (
         <Section title={t.inspector.contentSection}>
-          <ContentField snapshot={pinSnapshot} apply={apply} />
+          <ContentField
+            snapshot={pinSnapshot}
+            apply={apply}
+            onSelectionChange={setContentSelection}
+          />
         </Section>
       )}
 
       <Separator />
 
       <Section title={t.inspector.typographySection}>
-        <FontSizeField snapshot={pinSnapshot} apply={apply} />
-        <FontWeightField snapshot={pinSnapshot} apply={apply} />
-        <StyleToggles snapshot={pinSnapshot} apply={apply} />
+        <FontSizeField snapshot={pinSnapshot} apply={applyTextStyle} />
+        <FontWeightField snapshot={pinSnapshot} apply={applyTextStyle} />
+        <StyleToggles snapshot={pinSnapshot} apply={applyTextStyle} />
         <LineHeightField snapshot={pinSnapshot} apply={apply} />
         <LetterSpacingField snapshot={pinSnapshot} apply={apply} />
         <TextAlignField snapshot={pinSnapshot} apply={apply} />
@@ -194,7 +239,7 @@ export function InspectorPanel() {
         <ColorField
           label={t.inspector.textColor}
           value={pinSnapshot.color}
-          onChange={(v) => apply([{ kind: 'set-style', key: 'color', value: v }])}
+          onChange={(v) => applyTextStyle([{ kind: 'set-style', key: 'color', value: v }])}
           clearable={false}
         />
         <ColorField
@@ -253,12 +298,22 @@ const EDITING_FREEZE_CSS = `
 }
 `;
 
+const INLINE_CONTENT_STYLE_KEYS = new Set([
+  'fontSize',
+  'fontWeight',
+  'fontStyle',
+  'fontFamily',
+  'color',
+]);
+
 function ContentField({
   snapshot,
   apply,
+  onSelectionChange,
 }: {
   snapshot: ElementSnapshot;
   apply: (ops: EditOp[]) => void;
+  onSelectionChange?: (selection: ContentSelection | null) => void;
 }) {
   // Mirror the value locally and skip syncs during IME composition;
   // a re-render mid-composition would otherwise clobber in-progress
@@ -271,6 +326,12 @@ function ContentField({
     if (!composingRef.current) setLocal(snapshot.text ?? '');
   }, [snapshot.text]);
 
+  const reportSelection = (el: HTMLTextAreaElement) => {
+    const start = el.selectionStart ?? 0;
+    const end = el.selectionEnd ?? start;
+    onSelectionChange?.(end > start ? { start, end } : null);
+  };
+
   return (
     <Textarea
       value={local}
@@ -281,15 +342,20 @@ function ContentField({
         composingRef.current = false;
         const v = e.currentTarget.value;
         setLocal(v);
+        reportSelection(e.currentTarget);
         apply([{ kind: 'set-text', value: v }]);
       }}
       onChange={(e) => {
         const v = e.target.value;
         setLocal(v);
+        reportSelection(e.currentTarget);
         if (!composingRef.current) {
           apply([{ kind: 'set-text', value: v }]);
         }
       }}
+      onKeyUp={(e) => reportSelection(e.currentTarget)}
+      onMouseUp={(e) => reportSelection(e.currentTarget)}
+      onSelect={(e) => reportSelection(e.currentTarget)}
       rows={3}
       className="min-h-16 resize-none text-xs"
       placeholder={t.inspector.elementTextPlaceholder}

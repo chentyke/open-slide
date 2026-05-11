@@ -340,6 +340,60 @@ describe('applyEdit / set-text', () => {
     expect(r.source).toContain('<em>assistant</em>');
   });
 
+  it('applies a selected text style to an existing inline leaf', () => {
+    const src = [
+      'export default [() => (',
+      '<h2>',
+      '  Not autocomplete.',
+      '  <br />',
+      "  An <em style={{ color: 'var(--osd-accent)' }}>agent</em> that does the work.",
+      '</h2>',
+      ')];',
+      '',
+    ].join('\n');
+    const prevText = 'Not autocomplete.An agent that does the work.';
+    const start = prevText.indexOf('agent');
+    const r = applyEdit(src, 2, 0, [
+      {
+        kind: 'set-text-range-style',
+        start,
+        end: start + 'agent'.length,
+        key: 'color',
+        value: '#ff0000',
+        prevText,
+      },
+    ]);
+    if (!r.ok) throw new Error(`expected ok, got ${r.error}`);
+    expect(r.source).toContain("<em style={{ color: '#ff0000' }}>agent</em>");
+  });
+
+  it('wraps a selected plain text range with inline style', () => {
+    const src = [
+      'export default [() => (',
+      '<h2>',
+      '  Not autocomplete.',
+      '  <br />',
+      "  An <em style={{ color: 'var(--osd-accent)' }}>agent</em> that does the work.",
+      '</h2>',
+      ')];',
+      '',
+    ].join('\n');
+    const prevText = 'Not autocomplete.An agent that does the work.';
+    const start = prevText.indexOf('does');
+    const r = applyEdit(src, 2, 0, [
+      {
+        kind: 'set-text-range-style',
+        start,
+        end: start + 'does'.length,
+        key: 'fontWeight',
+        value: '700',
+        prevText,
+      },
+    ]);
+    if (!r.ok) throw new Error(`expected ok, got ${r.error}`);
+    expect(r.source).toContain("that <span style={{ fontWeight: '700' }}>does</span> the work.");
+  });
+
   it('bails when prevText is missing for an ambiguous element', () => {
     const src = ['export default [() => (', '<h1>Hello <span>world</span></h1>', ')];', ''].join(
       '\n',
