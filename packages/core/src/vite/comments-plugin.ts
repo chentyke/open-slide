@@ -349,6 +349,11 @@ function wrapSplice(parent: JsxParent, text: string): Splice {
   return { from: first.start ?? 0, to: last.end ?? 0, text };
 }
 
+function noopSplice(node: t.Node): Splice {
+  const at = node.start ?? 0;
+  return { from: at, to: at, text: '' };
+}
+
 function collectTextCandidates(element: JsxParent, out: TextCandidate[]): void {
   const meaningful = meaningfulChildren(element);
   const isSole = meaningful.length === 1;
@@ -443,7 +448,10 @@ function collectWholeTextCandidate(element: t.JSXElement, leafs: TextCandidate[]
   if (currents.length === 0) return [];
   return currents.map((current) => ({
     current,
-    splice: (value) => wrapSplice(element, formatJsxText(value)),
+    splice: (value) =>
+      normalizeRenderedText(value) === current
+        ? noopSplice(element)
+        : wrapSplice(element, formatJsxText(value)),
   }));
 }
 

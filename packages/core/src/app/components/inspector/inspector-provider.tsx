@@ -24,6 +24,7 @@ export type SelectedTarget = {
 };
 
 type AssetAttrOp = { assetPath: string; previewUrl: string };
+type TextDomSnapshot = { value: string; children: Node[] };
 
 type Bucket = {
   line: number;
@@ -38,11 +39,22 @@ type Bucket = {
   // Pre-edit snapshot of the DOM, captured the first time we touch
   // each style key / text / attribute. Used by `cancelEdits` to revert.
   origStyle: Map<string, string>;
-  origTexts: Map<string /* instanceId */, { value: string }>;
+  origTexts: Map<string /* instanceId */, TextDomSnapshot>;
   origAttrs: Map<string, string | null>;
 };
 
 const INSTANCE_ID_ATTR = 'data-slide-instance-id';
+
+function readTextDomSnapshot(el: HTMLElement): TextDomSnapshot {
+  return {
+    value: el.textContent ?? '',
+    children: Array.from(el.childNodes, (n) => n.cloneNode(true)),
+  };
+}
+
+function restoreTextDomSnapshot(el: HTMLElement, snapshot: TextDomSnapshot): void {
+  el.replaceChildren(...snapshot.children.map((n) => n.cloneNode(true)));
+}
 
 function readInstanceId(el: HTMLElement): string | null {
   return el.getAttribute(INSTANCE_ID_ATTR);
@@ -169,7 +181,13 @@ export function InspectorProvider({ slideId, children }: { slideId: string; chil
           if (!anchor) continue;
           const instanceId = ensureInstanceId(anchor);
           if (!bucket.origTexts.has(instanceId)) {
-            bucket.origTexts.set(instanceId, { value: anchor.textContent ?? '' });
+            bucket.origTexts.set(instanceId, readTextDomSnapshot(anchor));
+          }
+          const orig = bucket.origTexts.get(instanceId);
+          if (orig && op.value === orig.value) {
+            bucket.textOps.delete(instanceId);
+            if (anchor.isConnected) restoreTextDomSnapshot(anchor, orig);
+            continue;
           }
           bucket.textOps.set(instanceId, { value: op.value });
           if (anchor.isConnected) anchor.textContent = op.value;
@@ -196,7 +214,8 @@ export function InspectorProvider({ slideId, children }: { slideId: string; chil
   type TextSnap = {
     kind: 'text';
     instanceId: string;
-    value: string | null;
+    value: string;
+    children: Node[];
     existed: boolean;
   };
   type AttrSnap = {
@@ -234,12 +253,19 @@ export function InspectorProvider({ slideId, children }: { slideId: string; chil
           const instanceId = ensureInstanceId(anchor);
           const existing = bucket?.textOps.get(instanceId);
           if (existing) {
-            snaps.push({ kind: 'text', instanceId, value: existing.value, existed: true });
+            snaps.push({
+              kind: 'text',
+              instanceId,
+              value: existing.value,
+              children: Array.from(anchor.childNodes, (n) => n.cloneNode(true)),
+              existed: true,
+            });
           } else {
             snaps.push({
               kind: 'text',
               instanceId,
               value: anchor.textContent ?? '',
+              children: Array.from(anchor.childNodes, (n) => n.cloneNode(true)),
               existed: false,
             });
           }
@@ -297,11 +323,11 @@ export function InspectorProvider({ slideId, children }: { slideId: string; chil
           const textAnchor = findAnchor(line, column, snap.instanceId);
           if (snap.existed) {
             bucket.textOps.set(snap.instanceId, { value: snap.value ?? '' });
-            if (textAnchor?.isConnected) textAnchor.textContent = snap.value ?? '';
+            if (textAnchor?.isConnected) restoreTextDomSnapshot(textAnchor, snap);
           } else {
             bucket.textOps.delete(snap.instanceId);
             const orig = bucket.origTexts.get(snap.instanceId);
-            if (textAnchor?.isConnected) textAnchor.textContent = orig?.value ?? '';
+            if (textAnchor?.isConnected && orig) restoreTextDomSnapshot(textAnchor, orig);
           }
         } else if (snap.kind === 'attr') {
           if (snap.source === 'op') {
@@ -462,7 +488,7 @@ export function InspectorProvider({ slideId, children }: { slideId: string; chil
       for (const [instanceId, orig] of b.origTexts) {
         const textEl =
           root?.querySelector<HTMLElement>(`[${INSTANCE_ID_ATTR}="${instanceId}"]`) ?? null;
-        if (textEl?.isConnected) textEl.textContent = orig.value;
+        if (textEl?.isConnected) restoreTextDomSnapshot(textEl, orig);
       }
     }
     pendingRef.current = new Map();
