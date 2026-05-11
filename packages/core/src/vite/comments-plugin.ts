@@ -354,6 +354,55 @@ function noopSplice(node: t.Node): Splice {
   return { from: at, to: at, text: '' };
 }
 
+function sharedPrefixLength(a: string, b: string): number {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return i;
+}
+
+function sharedSuffixLength(a: string, b: string, prefix: number): number {
+  let i = 0;
+  while (
+    i < a.length - prefix &&
+    i < b.length - prefix &&
+    a[a.length - 1 - i] === b[b.length - 1 - i]
+  ) {
+    i++;
+  }
+  return i;
+}
+
+function preserveSingleTextLeafSplice(
+  leafs: TextCandidate[],
+  current: string,
+  value: string,
+): Splice | null {
+  const next = normalizeRenderedText(value);
+  if (next === current) return null;
+
+  const prefix = sharedPrefixLength(current, next);
+  const suffix = sharedSuffixLength(current, next, prefix);
+  const oldEnd = current.length - suffix;
+  const newEnd = next.length - suffix;
+
+  let searchAt = 0;
+  for (const leaf of leafs) {
+    const start = current.indexOf(leaf.current, searchAt);
+    if (start < 0) continue;
+    const end = start + leaf.current.length;
+    searchAt = end;
+    if (prefix < start || oldEnd > end) continue;
+
+    const relStart = prefix - start;
+    const relEnd = oldEnd - start;
+    const leafValue =
+      leaf.current.slice(0, relStart) + next.slice(prefix, newEnd) + leaf.current.slice(relEnd);
+    return leaf.splice(leafValue);
+  }
+
+  return null;
+}
+
 function collectTextCandidates(element: JsxParent, out: TextCandidate[]): void {
   const meaningful = meaningfulChildren(element);
   const isSole = meaningful.length === 1;
@@ -448,10 +497,13 @@ function collectWholeTextCandidate(element: t.JSXElement, leafs: TextCandidate[]
   if (currents.length === 0) return [];
   return currents.map((current) => ({
     current,
-    splice: (value) =>
-      normalizeRenderedText(value) === current
-        ? noopSplice(element)
-        : wrapSplice(element, formatJsxText(value)),
+    splice: (value) => {
+      if (normalizeRenderedText(value) === current) return noopSplice(element);
+      return (
+        preserveSingleTextLeafSplice(leafs, current, value) ??
+        wrapSplice(element, formatJsxText(value))
+      );
+    },
   }));
 }
 

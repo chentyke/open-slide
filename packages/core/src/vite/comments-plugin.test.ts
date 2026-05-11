@@ -293,6 +293,53 @@ describe('applyEdit / set-text', () => {
     expect(r.source).toBe(src);
   });
 
+  it('preserves inline formatting when a whole-text edit only changes one leaf', () => {
+    const src = [
+      'export default [() => (',
+      '<h2>',
+      '  Not autocomplete.',
+      '  <br />',
+      '  An <em>agent</em> that does the work.',
+      '</h2>',
+      ')];',
+      '',
+    ].join('\n');
+    const r = applyEdit(src, 2, 0, [
+      {
+        kind: 'set-text',
+        value: 'Not autocomplete.An agent that does the work!',
+        prevText: 'Not autocomplete.An agent that does the work.',
+      },
+    ]);
+    if (!r.ok) throw new Error(`expected ok, got ${r.error}`);
+    expect(r.source).toContain('<br />');
+    expect(r.source).toContain('<em>agent</em>');
+    expect(r.source).toContain('that does the work!');
+  });
+
+  it('preserves an inline wrapper when editing the styled text leaf', () => {
+    const src = [
+      'export default [() => (',
+      '<h2>',
+      '  Not autocomplete.',
+      '  <br />',
+      '  An <em>agent</em> that does the work.',
+      '</h2>',
+      ')];',
+      '',
+    ].join('\n');
+    const r = applyEdit(src, 2, 0, [
+      {
+        kind: 'set-text',
+        value: 'Not autocomplete.An assistant that does the work.',
+        prevText: 'Not autocomplete.An agent that does the work.',
+      },
+    ]);
+    if (!r.ok) throw new Error(`expected ok, got ${r.error}`);
+    expect(r.source).toContain('<br />');
+    expect(r.source).toContain('<em>assistant</em>');
+  });
+
   it('bails when prevText is missing for an ambiguous element', () => {
     const src = ['export default [() => (', '<h1>Hello <span>world</span></h1>', ')];', ''].join(
       '\n',
