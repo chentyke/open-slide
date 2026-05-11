@@ -56,6 +56,74 @@ function restoreTextDomSnapshot(el: HTMLElement, snapshot: TextDomSnapshot): voi
   el.replaceChildren(...snapshot.children.map((n) => n.cloneNode(true)));
 }
 
+function sharedPrefixLength(a: string, b: string): number {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return i;
+}
+
+function sharedSuffixLength(a: string, b: string, prefix: number): number {
+  let i = 0;
+  while (
+    i < a.length - prefix &&
+    i < b.length - prefix &&
+    a[a.length - 1 - i] === b[b.length - 1 - i]
+  ) {
+    i++;
+  }
+  return i;
+}
+
+function previewChildrenForText(snapshot: TextDomSnapshot, value: string): Node[] | null {
+  const children = snapshot.children.map((n) => n.cloneNode(true));
+  const leaves: Array<{ node: Text; start: number; end: number }> = [];
+  let offset = 0;
+
+  const collect = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent ?? '';
+      const start = offset;
+      offset += text.length;
+      if (text) leaves.push({ node: node as Text, start, end: offset });
+      return;
+    }
+    for (const child of Array.from(node.childNodes)) collect(child);
+  };
+
+  for (const child of children) collect(child);
+  if (offset !== snapshot.value.length) return null;
+
+  const prefix = sharedPrefixLength(snapshot.value, value);
+  const suffix = sharedSuffixLength(snapshot.value, value, prefix);
+  const oldEnd = snapshot.value.length - suffix;
+  const newEnd = value.length - suffix;
+
+  for (const leaf of leaves) {
+    if (prefix < leaf.start || oldEnd > leaf.end) continue;
+    const relStart = prefix - leaf.start;
+    const relEnd = oldEnd - leaf.start;
+    const text = leaf.node.textContent ?? '';
+    leaf.node.textContent =
+      text.slice(0, relStart) + value.slice(prefix, newEnd) + text.slice(relEnd);
+    return children;
+  }
+
+  return null;
+}
+
+function applyTextPreview(el: HTMLElement, snapshot: TextDomSnapshot, value: string): void {
+  if (value === snapshot.value) {
+    restoreTextDomSnapshot(el, snapshot);
+    return;
+  }
+  const children = previewChildrenForText(snapshot, value);
+  if (children) {
+    el.replaceChildren(...children);
+  } else {
+    el.textContent = value;
+  }
+}
+
 function readInstanceId(el: HTMLElement): string | null {
   return el.getAttribute(INSTANCE_ID_ATTR);
 }
@@ -190,7 +258,7 @@ export function InspectorProvider({ slideId, children }: { slideId: string; chil
             continue;
           }
           bucket.textOps.set(instanceId, { value: op.value });
-          if (anchor.isConnected) anchor.textContent = op.value;
+          if (anchor.isConnected && orig) applyTextPreview(anchor, orig, op.value);
         } else if (op.kind === 'set-attr-asset') {
           if (anchor && !bucket.origAttrs.has(op.attr)) {
             bucket.origAttrs.set(
@@ -536,8 +604,9 @@ export function InspectorProvider({ slideId, children }: { slideId: string; chil
       const instanceId = readInstanceId(el);
       if (instanceId) {
         const textOp = bucket.textOps.get(instanceId);
-        if (textOp && el.textContent !== textOp.value) {
-          el.textContent = textOp.value;
+        const orig = bucket.origTexts.get(instanceId);
+        if (textOp && orig && el.textContent !== textOp.value) {
+          applyTextPreview(el, orig, textOp.value);
         }
       }
       for (const [attr, op] of bucket.attrOps) {
