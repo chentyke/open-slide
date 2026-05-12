@@ -394,6 +394,61 @@ describe('applyEdit / set-text', () => {
     expect(r.source).toContain("that <span style={{ fontWeight: '700' }}>does</span> the work.");
   });
 
+  it('styles a selected range across inline and plain text leaves', () => {
+    const src = [
+      'export default [() => (',
+      '<h2>',
+      '  Not autocomplete.',
+      '  <br />',
+      "  An <em style={{ color: 'var(--osd-accent)' }}>agent</em> that does the work.",
+      '</h2>',
+      ')];',
+      '',
+    ].join('\n');
+    const prevText = 'Not autocomplete.An agent that does the work.';
+    const start = prevText.indexOf('agent');
+    const r = applyEdit(src, 2, 0, [
+      {
+        kind: 'set-text-range-style',
+        start,
+        end: start + 'agent that'.length,
+        key: 'color',
+        value: '#bb7025',
+        prevText,
+      },
+    ]);
+    if (!r.ok) throw new Error(`expected ok, got ${r.error}`);
+    expect(r.source).toContain("<em style={{ color: '#bb7025' }}>agent</em>");
+    expect(r.source).toContain("<span style={{ color: '#bb7025' }}>that</span> does");
+  });
+
+  it('styles a selected range across an existing styled span and adjacent text', () => {
+    const src = [
+      'export default [() => (',
+      '<h2>',
+      "  <span style={{ color: '#9e662e' }}>Not autocomplet</span>e.",
+      '  <br />',
+      "  An <em style={{ color: 'var(--osd-accent)' }}>agent</em> that does the work.",
+      '</h2>',
+      ')];',
+      '',
+    ].join('\n');
+    const prevText = 'Not autocomplete.An agent that does the work.';
+    const r = applyEdit(src, 2, 0, [
+      {
+        kind: 'set-text-range-style',
+        start: 0,
+        end: 'Not autocomplete'.length,
+        key: 'color',
+        value: '#bb7025',
+        prevText,
+      },
+    ]);
+    if (!r.ok) throw new Error(`expected ok, got ${r.error}`);
+    expect(r.source).toContain("<span style={{ color: '#bb7025' }}>Not autocomplet</span>");
+    expect(r.source).toContain("<span style={{ color: '#bb7025' }}>e</span>.");
+  });
+
   it('bails when prevText is missing for an ambiguous element', () => {
     const src = ['export default [() => (', '<h1>Hello <span>world</span></h1>', ')];', ''].join(
       '\n',

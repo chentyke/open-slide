@@ -460,14 +460,14 @@ function styleSpanForText(text: string, key: string, value: string | null): stri
   return `<span style={{ ${key}: ${jsString(value)} }}>${formatJsxText(text)}</span>`;
 }
 
-function buildTextRangeStyleSplice(
+function buildTextRangeStyleSplices(
   source: string,
   element: t.JSXElement,
   start: number,
   end: number,
   op: { key: string; value: string | null },
   prevText?: string,
-): Splice | { error: string } | null {
+): Splice[] | { error: string } | null {
   if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start) {
     return { error: 'invalid text range' };
   }
@@ -479,39 +479,44 @@ function buildTextRangeStyleSplice(
   const leaves: TextRangeLeaf[] = [];
   collectTextRangeLeaves(element, leaves);
 
+  const splices: Splice[] = [];
   let searchAt = 0;
   for (const leaf of leaves) {
     const leafStart = current.indexOf(leaf.current, searchAt);
     if (leafStart < 0) continue;
     const leafEnd = leafStart + leaf.current.length;
     searchAt = leafEnd;
-    if (start < leafStart || end > leafEnd) continue;
+    const selectedStart = Math.max(start, leafStart);
+    const selectedEnd = Math.min(end, leafEnd);
+    if (selectedStart >= selectedEnd) continue;
 
     if (
-      start === leafStart &&
-      end === leafEnd &&
+      selectedStart === leafStart &&
+      selectedEnd === leafEnd &&
       t.isJSXElement(leaf.parent) &&
       leaf.parent !== element
     ) {
-      return buildStyleSplice(source, leaf.parent, [op]);
+      const result = buildStyleSplice(source, leaf.parent, [op]);
+      if (result && 'error' in result) return result;
+      if (result) splices.push(result);
+      continue;
     }
 
     const raw = leaf.node.value;
     const currentStartInRaw = raw.indexOf(leaf.current);
     if (currentStartInRaw < 0) return { error: 'text range source mismatch' };
-    const rawStart = currentStartInRaw + start - leafStart;
-    const rawEnd = currentStartInRaw + end - leafStart;
+    const rawStart = currentStartInRaw + selectedStart - leafStart;
+    const rawEnd = currentStartInRaw + selectedEnd - leafStart;
     const before = raw.slice(0, rawStart);
     const selected = raw.slice(rawStart, rawEnd);
     const after = raw.slice(rawEnd);
-    if (op.value === null) return noopSplice(leaf.node);
-    return spliceRange(
-      leaf.node,
-      `${before}${styleSpanForText(selected, op.key, op.value)}${after}`,
+    if (op.value === null) continue;
+    splices.push(
+      spliceRange(leaf.node, `${before}${styleSpanForText(selected, op.key, op.value)}${after}`),
     );
   }
 
-  return { error: 'text range spans multiple text nodes' };
+  return splices.length > 0 ? splices : null;
 }
 
 function normalizeRenderedText(value: string): string {
@@ -1069,7 +1074,7 @@ export function applyEdit(
 
   for (const op of ops) {
     if (op.kind !== 'set-text-range-style') continue;
-    const result = buildTextRangeStyleSplice(
+    const result = buildTextRangeStyleSplices(
       source,
       element,
       op.start,
@@ -1078,7 +1083,7 @@ export function applyEdit(
       op.prevText,
     );
     if (result && 'error' in result) return { ok: false, status: 422, error: result.error };
-    if (result) splices.push(result);
+    if (result) splices.push(...result);
   }
 
   for (const op of ops) {
